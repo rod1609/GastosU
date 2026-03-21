@@ -19,8 +19,8 @@ proximo_id = 1
 email_destino = os.environ.get("TASKS_EMAIL_TO", "")
 ultimo_recordatorio = ""
 
-EMAIL_FROM = os.environ.get("TASKS_EMAIL_FROM", "tu_correo@gmail.com")
-EMAIL_PASSWORD = os.environ.get("TASKS_EMAIL_PASSWORD", "tu_contrasena_o_app_password")
+EMAIL_FROM = os.environ.get("TASKS_EMAIL_FROM", "romartelo08@gmail.com")
+EMAIL_PASSWORD = os.environ.get("TASKS_EMAIL_PASSWORD", "nescrksscowvhbei")
 REMINDER_HOUR = int(os.environ.get("TASKS_REMINDER_HOUR", "7"))
 recordatorio_iniciado = False
 
