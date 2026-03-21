@@ -13,9 +13,12 @@ app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 GASTOS_FILE = os.path.join(BASE_DIR, "gastos_pasajes.json")
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+RETIROS_FILE = os.path.join(BASE_DIR, "retiros_semanales.json")
 
 gastos = []
 proximo_id = 1
+retiros = []
+proximo_retiro_id = 1
 email_destino = os.environ.get("TASKS_EMAIL_TO", "")
 ultimo_recordatorio = ""
 
@@ -43,6 +46,28 @@ def guardar_gastos():
     try:
         with open(GASTOS_FILE, "w", encoding="utf-8") as f:
             json.dump(gastos, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+def cargar_retiros():
+    global retiros, proximo_retiro_id
+    retiros[:] = []
+    if os.path.exists(RETIROS_FILE):
+        try:
+            with open(RETIROS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                retiros[:] = data
+        except (json.JSONDecodeError, OSError):
+            pass
+    proximo_retiro_id = max((r["id"] for r in retiros), default=0) + 1
+
+
+def guardar_retiros():
+    try:
+        with open(RETIROS_FILE, "w", encoding="utf-8") as f:
+            json.dump(retiros, f, ensure_ascii=False, indent=2)
     except OSError:
         pass
 
@@ -116,6 +141,17 @@ def resumen():
         if fecha_gasto.year == hoy.year and fecha_gasto.month == hoy.month:
             total_mensual += g.get("total_dia", 0)
 
+    total_retirado_semanal = 0.0
+
+    for r in retiros:
+        try:
+            fecha_retiro = datetime.strptime(r["fecha"], "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            continue
+        if fecha_retiro.isocalendar()[:2] == iso_hoy[:2]:
+            total_retirado_semanal += r.get("monto", 0)
+
+    saldo_semanal = round(total_retirado_semanal - total_semanal, 2)
     return {
         "dias_registrados": len(gastos),
         "total_ida": round(total_ida, 2),
@@ -123,11 +159,21 @@ def resumen():
         "total_general": round(total_general, 2),
         "total_semanal": round(total_semanal, 2),
         "total_mensual": round(total_mensual, 2),
+        "total_retirado_semanal": round(total_retirado_semanal, 2),
+        "saldo_semanal": saldo_semanal,
     }
 
 
 def gastos_ordenados():
     return sorted(gastos, key=lambda g: g["fecha"], reverse=True)
+
+
+def retiros_ordenados():
+    return sorted(retiros, key=lambda r: r["fecha"], reverse=True)
+
+
+def retiro_por_id(retiro_id):
+    return next((r for r in retiros if r["id"] == retiro_id), None)
 
 
 def enviar_recordatorio_diario():
@@ -221,6 +267,18 @@ PLANTILLA_INDEX = """
       .correo-box h3 { margin: 0 0 8px; font-size: 0.95rem; color: #1d4ed8; }
       .correo-box p { margin: 6px 0 0; color: #6b7280; font-size: 0.85rem; }
       .correo-form { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin: 0; }
+      .presupuesto-box { margin: 0 0 14px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 10px; }
+      .presupuesto-box h3 { margin: 0 0 8px; font-size: 0.95rem; color: #15803d; }
+      .presupuesto-box p { margin: 6px 0 0; color: #4b5563; font-size: 0.85rem; }
+      .presupuesto-form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin: 0; }
+      .saldo-ok { color: #166534; font-weight: 600; }
+      .saldo-exceso { color: #b91c1c; font-weight: 600; }
+      .retiros-lista { margin-top: 8px; font-size: 0.88rem; color: #374151; }
+      .retiros-lista ul { margin: 6px 0 0; padding-left: 18px; }
+      .retiros-lista a { margin-left: 8px; text-decoration: none; font-size: 0.84rem; }
+      .retiro-editar { color: #2563eb; }
+      .retiro-eliminar { color: #dc2626; }
+      .retiros-lista a:hover { text-decoration: underline; }
       @media (max-width: 850px) {
         .container { margin: 12px; padding: 18px 14px 20px; border-radius: 10px; }
         h1 { font-size: 1.35rem; margin-bottom: 10px; }
@@ -229,6 +287,7 @@ PLANTILLA_INDEX = """
         form { grid-template-columns: 1fr; }
         input, button { font-size: 1rem; }
         .correo-form { grid-template-columns: 1fr; }
+        .presupuesto-form { grid-template-columns: 1fr; }
       }
       @media (max-width: 600px) {
         .resumen { grid-template-columns: 1fr; }
@@ -259,6 +318,37 @@ PLANTILLA_INDEX = """
           <button type="submit">Guardar correo</button>
         </form>
         <p>Se enviara 1 recordatorio diario de lunes a viernes despues de las {{ reminder_hour }}:00.</p>
+      </section>
+
+      <section class="presupuesto-box">
+        <h3>Dinero retirado para pasajes (semanal)</h3>
+        <form class="presupuesto-form" action="{{ url_for('config_presupuesto') }}" method="post">
+          <input type="date" name="fecha_retiro" value="{{ hoy }}" required>
+          <input type="number" name="monto_retiro" step="0.01" min="0" placeholder="Monto retirado" required>
+          <button type="submit">Registrar retiro</button>
+        </form>
+        <p>Retirado esta semana: S/. {{ "%.2f"|format(resumen.total_retirado_semanal) }} | Gastado: S/. {{ "%.2f"|format(resumen.total_semanal) }}</p>
+        {% if resumen.saldo_semanal >= 0 %}
+        <p class="saldo-ok">Te quedan S/. {{ "%.2f"|format(resumen.saldo_semanal) }} esta semana.</p>
+        {% else %}
+        <p class="saldo-exceso">Te pasaste por S/. {{ "%.2f"|format(-resumen.saldo_semanal) }} esta semana.</p>
+        {% endif %}
+        <div class="retiros-lista">
+          <strong>Historial de retiros:</strong>
+          {% if retiros %}
+          <ul>
+            {% for r in retiros %}
+            <li>
+              {{ r.fecha }} - S/. {{ "%.2f"|format(r.monto) }}
+              <a class="retiro-editar" href="{{ url_for('editar_retiro', retiro_id=r.id) }}">Editar</a>
+              <a class="retiro-eliminar" href="{{ url_for('eliminar_retiro', retiro_id=r.id) }}">Eliminar</a>
+            </li>
+            {% endfor %}
+          </ul>
+          {% else %}
+          <p>No hay retiros registrados aun.</p>
+          {% endif %}
+        </div>
       </section>
 
       <section class="resumen">
@@ -361,12 +451,56 @@ PLANTILLA_EDITAR = """
 """
 
 
+PLANTILLA_EDITAR_RETIRO = """
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Editar retiro semanal</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 0; padding: 0; background: #f3f4f6; }
+      .container { max-width: 620px; margin: 36px auto; background: #fff; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.06); padding: 24px 28px 30px; }
+      h1 { margin: 0 0 14px; font-size: 1.5rem; }
+      form { display: grid; gap: 10px; }
+      input, button { padding: 9px 10px; border-radius: 6px; border: 1px solid #d1d5db; font-size: 0.94rem; }
+      button { background: #2563eb; color: #fff; border: none; cursor: pointer; }
+      button:hover { background: #1d4ed8; }
+      .volver { display: inline-block; margin-top: 12px; color: #6b7280; font-size: 0.9rem; text-decoration: none; }
+      .volver:hover { text-decoration: underline; }
+      .error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 9px 10px; border-radius: 8px; margin: 0 0 14px; }
+      @media (max-width: 700px) {
+        .container { margin: 12px; padding: 18px 14px 20px; border-radius: 10px; }
+        h1 { font-size: 1.25rem; margin-bottom: 10px; }
+        input, button { font-size: 1rem; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>Editar retiro semanal</h1>
+      {% if error %}
+      <p class="error">{{ error }}</p>
+      {% endif %}
+      <form method="post">
+        <input type="date" name="fecha_retiro" value="{{ retiro.fecha }}" required>
+        <input type="number" name="monto_retiro" step="0.01" min="0" value="{{ retiro.monto }}" required>
+        <button type="submit">Guardar cambios</button>
+      </form>
+      <a class="volver" href="{{ url_for('index') }}">Volver al inicio</a>
+    </div>
+  </body>
+</html>
+"""
+
+
 @app.route("/")
 def index():
     return render_template_string(
         PLANTILLA_INDEX,
         gastos=gastos_ordenados(),
         resumen=resumen(),
+        retiros=retiros_ordenados(),
         hoy=date.today().isoformat(),
         error=request.args.get("error", ""),
         email_destino=email_destino,
@@ -381,6 +515,59 @@ def config_correo():
     if email:
         email_destino = email
         guardar_config()
+    return redirect(url_for("index"))
+
+
+@app.route("/config-presupuesto", methods=["POST"])
+def config_presupuesto():
+    global proximo_retiro_id
+    fecha_retiro = request.form.get("fecha_retiro", "").strip()
+    monto = a_float(request.form.get("monto_retiro", "").strip())
+    if not validar_fecha(fecha_retiro):
+        return redirect(url_for("index", error="Ingresa una fecha valida para el retiro semanal."))
+    if monto is None or monto < 0:
+        return redirect(url_for("index", error="Ingresa un monto valido para el retiro semanal."))
+    retiros.append({"id": proximo_retiro_id, "fecha": fecha_retiro, "monto": monto})
+    proximo_retiro_id += 1
+    guardar_retiros()
+    return redirect(url_for("index"))
+
+
+@app.route("/editar-retiro/<int:retiro_id>", methods=["GET", "POST"])
+def editar_retiro(retiro_id):
+    retiro = retiro_por_id(retiro_id)
+    if not retiro:
+        return redirect(url_for("index", error="Retiro no encontrado."))
+
+    if request.method == "POST":
+        fecha_retiro = request.form.get("fecha_retiro", "").strip()
+        monto = a_float(request.form.get("monto_retiro", "").strip())
+        if not validar_fecha(fecha_retiro):
+            return render_template_string(
+                PLANTILLA_EDITAR_RETIRO,
+                retiro=retiro,
+                error="Ingresa una fecha valida.",
+            )
+        if monto is None or monto < 0:
+            return render_template_string(
+                PLANTILLA_EDITAR_RETIRO,
+                retiro=retiro,
+                error="Ingresa un monto valido.",
+            )
+
+        retiro["fecha"] = fecha_retiro
+        retiro["monto"] = monto
+        guardar_retiros()
+        return redirect(url_for("index"))
+
+    return render_template_string(PLANTILLA_EDITAR_RETIRO, retiro=retiro, error="")
+
+
+@app.route("/eliminar-retiro/<int:retiro_id>")
+def eliminar_retiro(retiro_id):
+    global retiros
+    retiros = [r for r in retiros if r["id"] != retiro_id]
+    guardar_retiros()
     return redirect(url_for("index"))
 
 
@@ -454,6 +641,7 @@ def eliminar_gasto(gasto_id):
 
 cargar_config()
 cargar_gastos()
+cargar_retiros()
 
 
 if __name__ == "__main__":
