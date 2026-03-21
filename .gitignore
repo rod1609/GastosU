@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Datos locales del usuario
+gastos_pasajes.json
