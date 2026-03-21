@@ -1,6 +1,10 @@
 import json
 import os
+import smtplib
+import threading
+import time
 from datetime import date, datetime
+from email.message import EmailMessage
 
 from flask import Flask, redirect, render_template_string, request, url_for
 
@@ -8,9 +12,17 @@ app = Flask(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 GASTOS_FILE = os.path.join(BASE_DIR, "gastos_pasajes.json")
+CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 
 gastos = []
 proximo_id = 1
+email_destino = os.environ.get("TASKS_EMAIL_TO", "")
+ultimo_recordatorio = ""
+
+EMAIL_FROM = os.environ.get("TASKS_EMAIL_FROM", "tu_correo@gmail.com")
+EMAIL_PASSWORD = os.environ.get("TASKS_EMAIL_PASSWORD", "tu_contrasena_o_app_password")
+REMINDER_HOUR = int(os.environ.get("TASKS_REMINDER_HOUR", "7"))
+recordatorio_iniciado = False
 
 
 def cargar_gastos():
@@ -31,6 +43,36 @@ def guardar_gastos():
     try:
         with open(GASTOS_FILE, "w", encoding="utf-8") as f:
             json.dump(gastos, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+def cargar_config():
+    global email_destino, ultimo_recordatorio
+    if not os.path.exists(CONFIG_FILE):
+        return
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            email_destino = data.get("email_destino", email_destino)
+            ultimo_recordatorio = data.get("ultimo_recordatorio", ultimo_recordatorio)
+    except (json.JSONDecodeError, OSError):
+        pass
+
+
+def guardar_config():
+    try:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "email_destino": email_destino,
+                    "ultimo_recordatorio": ultimo_recordatorio,
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
     except OSError:
         pass
 
@@ -88,6 +130,62 @@ def gastos_ordenados():
     return sorted(gastos, key=lambda g: g["fecha"], reverse=True)
 
 
+def enviar_recordatorio_diario():
+    if not (EMAIL_FROM and EMAIL_PASSWORD and email_destino):
+        return False
+
+    msg = EmailMessage()
+    msg["Subject"] = "Recordatorio: registra tu gasto de pasaje universitario"
+    msg["From"] = EMAIL_FROM
+    msg["To"] = email_destino
+    msg.set_content(
+        """Hola,
+
+Este es tu recordatorio de lunes a viernes para registrar tu gasto diario
+de pasaje de ida y vuelta en Organizador de GastosU.
+
+Que tengas un buen dia de clases.
+"""
+    )
+
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
+            server.login(EMAIL_FROM, EMAIL_PASSWORD)
+            server.send_message(msg)
+        return True
+    except Exception:
+        return False
+
+
+def iniciar_recordatorio_semanal():
+    def loop_recordatorio():
+        global ultimo_recordatorio
+        while True:
+            ahora = datetime.now()
+            hoy = ahora.date().isoformat()
+            es_laboral = ahora.weekday() < 5
+            hora_objetivo = ahora.hour >= REMINDER_HOUR
+
+            if es_laboral and hora_objetivo and ultimo_recordatorio != hoy:
+                enviado = enviar_recordatorio_diario()
+                if enviado:
+                    ultimo_recordatorio = hoy
+                    guardar_config()
+            time.sleep(60)
+
+    hilo = threading.Thread(target=loop_recordatorio, daemon=True)
+    hilo.start()
+
+
+@app.before_request
+def asegurar_recordatorio():
+    global recordatorio_iniciado
+    if not recordatorio_iniciado:
+        iniciar_recordatorio_semanal()
+        recordatorio_iniciado = True
+
+
 PLANTILLA_INDEX = """
 <!doctype html>
 <html lang="es">
@@ -119,6 +217,10 @@ PLANTILLA_INDEX = """
       .acciones a:hover { text-decoration: underline; }
       .vacio { color: #9ca3af; margin: 8px 0 0; }
       .error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 9px 10px; border-radius: 8px; margin: 0 0 14px; }
+      .correo-box { margin: 0 0 14px; background: #eff6ff; border: 1px solid #dbeafe; border-radius: 8px; padding: 10px; }
+      .correo-box h3 { margin: 0 0 8px; font-size: 0.95rem; color: #1d4ed8; }
+      .correo-box p { margin: 6px 0 0; color: #6b7280; font-size: 0.85rem; }
+      .correo-form { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin: 0; }
       @media (max-width: 850px) {
         .container { margin: 12px; padding: 18px 14px 20px; border-radius: 10px; }
         h1 { font-size: 1.35rem; margin-bottom: 10px; }
@@ -126,6 +228,7 @@ PLANTILLA_INDEX = """
         .resumen { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         form { grid-template-columns: 1fr; }
         input, button { font-size: 1rem; }
+        .correo-form { grid-template-columns: 1fr; }
       }
       @media (max-width: 600px) {
         .resumen { grid-template-columns: 1fr; }
@@ -148,6 +251,15 @@ PLANTILLA_INDEX = """
       {% if error %}
       <p class="error">{{ error }}</p>
       {% endif %}
+
+      <section class="correo-box">
+        <h3>Recordatorio por correo (lunes a viernes)</h3>
+        <form class="correo-form" action="{{ url_for('config_correo') }}" method="post">
+          <input type="email" name="email" value="{{ email_destino or '' }}" placeholder="tu_correo@ejemplo.com" required>
+          <button type="submit">Guardar correo</button>
+        </form>
+        <p>Se enviara 1 recordatorio diario de lunes a viernes despues de las {{ reminder_hour }}:00.</p>
+      </section>
 
       <section class="resumen">
         <div class="card"><h3>Dias registrados</h3><p>{{ resumen.dias_registrados }}</p></div>
@@ -257,7 +369,19 @@ def index():
         resumen=resumen(),
         hoy=date.today().isoformat(),
         error=request.args.get("error", ""),
+        email_destino=email_destino,
+        reminder_hour=REMINDER_HOUR,
     )
+
+
+@app.route("/config-correo", methods=["POST"])
+def config_correo():
+    global email_destino
+    email = request.form.get("email", "").strip()
+    if email:
+        email_destino = email
+        guardar_config()
+    return redirect(url_for("index"))
 
 
 @app.route("/agregar", methods=["POST"])
@@ -328,6 +452,7 @@ def eliminar_gasto(gasto_id):
     return redirect(url_for("index"))
 
 
+cargar_config()
 cargar_gastos()
 
 
