@@ -21,7 +21,7 @@ ultimo_recordatorio = ""
 
 EMAIL_FROM = os.environ.get("TASKS_EMAIL_FROM", "romartelo08@gmail.com")
 EMAIL_PASSWORD = os.environ.get("TASKS_EMAIL_PASSWORD", "nescrksscowvhbei")
-REMINDER_HOUR = int(os.environ.get("TASKS_REMINDER_HOUR", "7"))
+REMINDER_HOUR = int(os.environ.get("TASKS_REMINDER_HOUR", "12"))
 recordatorio_iniciado = False
 
 
