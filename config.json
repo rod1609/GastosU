@@ -1,11 +1,4 @@
 {
   "email_destino": "romartelo08@gmail.com",
-  "ultimo_recordatorio": "",
-  "presupuesto_semanal": 40000.0,
-  "retiros_semanales": [
-    {
-      "fecha": "2026-03-21",
-      "monto": 40000.0
-    }
-  ]
+  "ultimo_recordatorio": ""
 }

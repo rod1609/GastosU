@@ -185,9 +185,7 @@ def enviar_recordatorio_diario():
     msg["From"] = EMAIL_FROM
     msg["To"] = email_destino
     msg.set_content(
-        """Hola,
-
-Este es tu recordatorio de lunes a viernes para registrar tu gasto diario
+        """Hola, este es tu recordatorio de lunes a viernes para registrar tu gasto diario
 de pasaje de ida y vuelta en Organizador de GastosU.
 
 Que tengas un buen dia de clases.
